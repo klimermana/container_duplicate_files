@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use bollard::Docker;
 use clap::Parser;
 use flate2::read::GzDecoder;
 use humansize::{BINARY, format_size};
@@ -6,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::env;
 use std::fs::File;
 use std::path::PathBuf;
 use std::{fs, io::BufReader, io::Read};
@@ -43,17 +45,48 @@ pub struct Analyzer {
     pub min_size: u64,
 }
 
+fn connect_docker() -> Result<Docker, bollard::errors::Error> {
+    if let Ok(docker) = Docker::connect_with_socket_defaults() {
+        return Ok(docker);
+    }
+
+    // macOS-specific paths for Docker Desktop
+    let macos_paths = [
+        "unix:///Users/$USER/.docker/run/docker.sock",
+        "unix:///var/run/docker.sock",
+        "unix:///Users/$USER/.colima/default/docker.sock",
+    ];
+
+    // Try macOS paths
+    for path in macos_paths {
+        let expanded_path = if path.contains("$USER") {
+            let user = env::var("USER").unwrap_or_else(|_| "".to_string());
+            path.replace("$USER", &user)
+        } else {
+            path.to_string()
+        };
+
+        if let Ok(docker) =
+            Docker::connect_with_socket(&expanded_path, 120, bollard::API_DEFAULT_VERSION)
+        {
+            return Ok(docker);
+        }
+    }
+
+    Err(bollard::errors::Error::SocketNotFoundError(
+        "Could not find Docker socket".to_string(),
+    ))
+}
+
 impl Analyzer {
     pub fn load(image: String, min_size: u64) -> Result<Self, Box<dyn std::error::Error>> {
         //Ugly way to determine input arg, do this better
         if image.contains(".tar") {
             Ok(Analyzer::load_from_tar(image, min_size)?)
+        } else if image.contains(":") {
+            Ok(Analyzer::load_from_docker(image, min_size)?)
         } else {
-            Err(anyhow!(
-                "Unexpected image string {}, must be exported tar file",
-                image
-            )
-            .into())
+            Err(anyhow!("Unexpected image string {}", image).into())
         }
     }
 
@@ -89,6 +122,13 @@ impl Analyzer {
             layers,
             min_size,
         })
+    }
+
+    fn load_from_docker(image: String, min_size: u64) -> Result<Self, Box<dyn std::error::Error>> {
+        // Can't seem to get the layer blobs from the docker daemon without first saving the image.
+        // Might need to export to an OCI image first?
+        // Ignoring for now
+        Err(anyhow!("Not implemented analyzing layers on docker image, export first").into())
     }
 
     pub fn scan_files(&self) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
