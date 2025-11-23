@@ -5,9 +5,10 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use humansize::{BINARY, format_size};
 use itertools::Itertools;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use walkdir::WalkDir;
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fs::File;
@@ -17,6 +18,7 @@ use std::{fs, io::BufReader, io::Read};
 use tar::{Archive, Builder};
 use tempfile::TempDir;
 use tempfile::tempdir;
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
@@ -127,15 +129,17 @@ impl Analyzer {
     }
 
     pub fn scan_files(&self) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
-        self.layers
-            .iter()
-            .try_fold(Vec::new(), |mut acc, layer| match self.scan_layer(layer) {
-                Ok(files) => {
-                    acc.extend(files);
-                    Ok(acc)
-                }
-                Err(e) => Err(anyhow!("Error scanning layer: {:?} {}", layer, e).into()),
+        Ok(self
+            .layers
+            .par_iter()
+            .map(|layer| {
+                self.scan_layer(layer)
+                    .map_err(|e| anyhow!("Error scanning layer: {:?} {}", layer, e))
             })
+            .collect::<Result<Vec<Vec<FileInfo>>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect())
     }
 
     fn scan_layer(&self, layer: &Layer) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
@@ -355,7 +359,7 @@ impl Analyzer {
         fs::create_dir_all(&blobs_dir)?;
 
         let mut new_refs = Vec::new();
-        for (idx, layer) in new_layers.iter().enumerate() {
+        for layer in new_layers {
             let mut file = File::open(&layer.path)?;
             let mut hasher = Sha256::new();
             std::io::copy(&mut file, &mut hasher)?;
