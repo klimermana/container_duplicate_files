@@ -359,8 +359,10 @@ impl Analyzer {
         let new_layer_dir = work_path.join("new_layers");
         let staging_dir = work_path.join("staging");
         fs::create_dir(&new_layer_dir)?;
+        println!("Creating modification plan...");
         let plan = self.generate_modification_plan(duplicates)?;
 
+        println!("Processing layers...");
         let new_layers: Result<Vec<_>> = self
             .layers
             .par_iter()
@@ -372,6 +374,7 @@ impl Analyzer {
 
         let new_layers = new_layers?;
 
+        println!("Updating manifest...");
         self.update_manifest(&staging_dir, &new_layers)?;
 
         let config_src = self.tmp_dir.path().join(&self.original_manifest.config);
@@ -384,6 +387,7 @@ impl Analyzer {
             output_path.display()
         ))?;
 
+        println!("Packing new image...");
         let mut builder = Builder::new(output_file);
 
         // Add all files from the new image directory
