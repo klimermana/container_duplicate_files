@@ -1,9 +1,10 @@
+use anyhow::Result;
 use clap::Parser;
 use std::path::Path;
 
 use docker_duplicate_files::{Analyzer, cli::Args};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let args = Args::parse();
     println!("Running on image: {}", args.image);
 

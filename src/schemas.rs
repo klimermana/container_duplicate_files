@@ -1,3 +1,4 @@
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -14,17 +15,17 @@ pub struct Manifest {
 pub type ManifestFile = Vec<Manifest>;
 
 impl Manifest {
-    pub fn from_file(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)?;
         let manifests: ManifestFile = serde_json::from_str(&contents)?;
         let manifest = manifests
             .into_iter()
             .next()
-            .ok_or("No manifest.json found")?;
+            .ok_or(anyhow!("No manifest.json found"))?;
         Ok(manifest)
     }
 
-    pub fn write_to_file(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn write_to_file(&self, path: &Path) -> Result<()> {
         let manifests = vec![self];
         let manifest_json = serde_json::to_string_pretty(&manifests)?;
         fs::write(path, manifest_json)?;
@@ -92,11 +93,12 @@ pub struct RootFs {
     #[serde(rename = "type")]
     pub fs_type: String,
 
+    // sha256 of the uncompressed layer
     pub diff_ids: Vec<String>,
 }
 
 impl DockerConfig {
-    pub fn from_file(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)?;
         let config: DockerConfig = serde_json::from_str(&contents)?;
         Ok(config)

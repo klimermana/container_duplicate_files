@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::{Context, Result, anyhow};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -16,6 +16,7 @@ use std::{fs, io::BufReader, io::Read};
 use tar::{Archive, Builder};
 use tempfile::TempDir;
 use tempfile::tempdir;
+use walkdir::WalkDir;
 
 use crate::schemas::*;
 
@@ -61,7 +62,7 @@ pub struct Analyzer {
     original_manifest: Manifest,
 }
 
-fn is_gzipped(file_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+fn is_gzipped(file_path: &Path) -> Result<bool> {
     let mut file = File::open(file_path)?;
     let mut magic_bytes = [0u8; 2];
     file.read_exact(&mut magic_bytes)?;
@@ -69,7 +70,7 @@ fn is_gzipped(file_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
 }
 
 impl Analyzer {
-    pub fn load(image: String, min_size: u64) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load(image: String, min_size: u64) -> Result<Self> {
         //Ugly way to determine input arg, do this better
         if image.contains(".tar") {
             Ok(Analyzer::load_from_tar(image, min_size)?)
@@ -82,7 +83,7 @@ impl Analyzer {
         }
     }
 
-    pub fn load_from_tar(image: String, min_size: u64) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load_from_tar(image: String, min_size: u64) -> Result<Self> {
         let tmp_dir = tempdir()?;
         let image = File::open(image)?;
         let tar_file = BufReader::new(image);
@@ -111,7 +112,7 @@ impl Analyzer {
         })
     }
 
-    pub fn scan_files(&self) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
+    pub fn scan_files(&self) -> Result<Vec<FileInfo>> {
         Ok(self
             .layers
             .par_iter()
@@ -125,12 +126,12 @@ impl Analyzer {
             .collect())
     }
 
-    fn scan_layer(&self, layer: &Layer) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
-        println!(
-            "Scanning layer {}/{}...",
-            layer.layer_index + 1,
-            self.layers.len()
-        );
+    fn scan_layer(&self, layer: &Layer) -> Result<Vec<FileInfo>> {
+        //println!(
+        //    "Scanning layer {}/{}...",
+        //    layer.layer_index + 1,
+        //    self.layers.len()
+        //);
         if is_gzipped(&layer.path)? {
             let file = File::open(layer.path.as_path())?;
             let decoder = GzDecoder::new(file);
@@ -141,11 +142,7 @@ impl Analyzer {
         }
     }
 
-    fn scan_tar_archive<R: Read>(
-        &self,
-        reader: R,
-        layer_index: usize,
-    ) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
+    fn scan_tar_archive<R: Read>(&self, reader: R, layer_index: usize) -> Result<Vec<FileInfo>> {
         let mut archive = Archive::new(reader);
         let mut files = Vec::new();
         for entry in archive.entries()? {
@@ -182,7 +179,7 @@ impl Analyzer {
         Ok(files)
     }
 
-    pub fn find_duplicates(&self) -> Result<Vec<DuplicateInfo>, Box<dyn std::error::Error>> {
+    pub fn find_duplicates(&self) -> Result<Vec<DuplicateInfo>> {
         let files = self.scan_files()?;
         let mut files_by_hash: HashMap<String, Vec<FileInfo>> = HashMap::new();
         for file in files {
@@ -208,10 +205,7 @@ impl Analyzer {
             .collect())
     }
 
-    pub fn print_possible_savings(
-        &self,
-        duplicates: &Vec<DuplicateInfo>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn print_possible_savings(&self, duplicates: &Vec<DuplicateInfo>) -> Result<()> {
         println!("=============================");
         println!("Total duplicate files: {}", duplicates.len());
         println!(
@@ -241,7 +235,7 @@ impl Analyzer {
     pub fn generate_modification_plan(
         &self,
         duplicates: Vec<DuplicateInfo>,
-    ) -> Result<HashMap<usize, Vec<DeDupTransaction>>, Box<dyn std::error::Error>> {
+    ) -> Result<HashMap<usize, Vec<DeDupTransaction>>> {
         Ok(duplicates
             .iter()
             .flat_map(|d| d.duplicates.iter().map(move |f| (d, f)))
@@ -263,11 +257,7 @@ impl Analyzer {
             .into_group_map())
     }
 
-    fn extract_layer(
-        &self,
-        layer_tar: &Path,
-        dest: &Path,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn extract_layer(&self, layer_tar: &Path, dest: &Path) -> Result<()> {
         let file = File::open(layer_tar)?;
         if is_gzipped(&layer_tar)? {
             let decoder = GzDecoder::new(file);
@@ -285,11 +275,7 @@ impl Analyzer {
         layer: &Layer,
         modifications: &Vec<DeDupTransaction>,
         output_dir: &Path,
-    ) -> Result<Layer, Box<dyn std::error::Error>> {
-        println!(
-            "Layer {}, modifications {:#?}",
-            layer.layer_index, modifications
-        );
+    ) -> Result<Layer> {
         let extract_dir = tempdir()?;
         self.extract_layer(&layer.path, extract_dir.path())?;
         for modif in modifications {
@@ -333,11 +319,7 @@ impl Analyzer {
         })
     }
 
-    fn update_manifest(
-        &self,
-        new_image_dir: &Path,
-        new_layers: &Vec<Layer>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn update_manifest(&self, new_image_dir: &Path, new_layers: &Vec<Layer>) -> Result<()> {
         let blobs_dir = new_image_dir.join("blobs/sha256");
         fs::create_dir_all(&blobs_dir)?;
 
@@ -346,7 +328,7 @@ impl Analyzer {
             let mut file = File::open(&layer.path)?;
             let mut hasher = Sha256::new();
             std::io::copy(&mut file, &mut hasher)?;
-            let digest = format!("{:X}", hasher.finalize());
+            let digest = format!("{:x}", hasher.finalize());
             let blob_path = blobs_dir.join(&digest);
             fs::copy(&layer.path, &blob_path)?;
 
@@ -365,29 +347,24 @@ impl Analyzer {
         &self,
         duplicates: Vec<DuplicateInfo>,
         output_path: &Path,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<()> {
         let work_dir = tempdir()?;
         let work_path = work_dir.path();
         let new_layer_dir = work_path.join("new_layers");
         let staging_dir = work_path.join("staging");
         fs::create_dir(&new_layer_dir)?;
-        let mut plan = self.generate_modification_plan(duplicates)?;
-        println!("{:#?}", plan);
+        let plan = self.generate_modification_plan(duplicates)?;
 
-        let mut new_layers = Vec::new();
-        for layer in &self.layers {
-            println!(
-                "Processing layer {}/{}",
-                layer.layer_index + 1,
-                self.layers.len()
-            );
-            let layer_mods = plan.entry(layer.layer_index).or_default();
-            if layer_mods.is_empty() {
-                new_layers.push(layer.clone());
-            } else {
-                new_layers.push(self.process_layer(layer, layer_mods, &new_layer_dir)?);
-            }
-        }
+        let new_layers: Result<Vec<_>> = self
+            .layers
+            .par_iter()
+            .map(|layer| match plan.get(&layer.layer_index) {
+                Some(mods) => self.process_layer(layer, mods, &new_layer_dir),
+                None => Ok(layer.clone()),
+            })
+            .collect();
+
+        let new_layers = new_layers?;
 
         self.update_manifest(&staging_dir, &new_layers)?;
 
