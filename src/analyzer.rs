@@ -291,7 +291,13 @@ impl Analyzer {
                     ))?;
                 }
                 LinkType::Hard => {
-                    fs::hard_link(&source_path, &file_path).context(format!(
+                    // TODO
+                    //fs::hard_link(&source_path, &file_path).context(format!(
+                    //    "Failed to create hardlink {} -> {}",
+                    //    file_path.display(),
+                    //    source_path.display()
+                    //))?;
+                    std::os::unix::fs::symlink(&source_path, &file_path).context(format!(
                         "Failed to create symlink {} -> {}",
                         file_path.display(),
                         source_path.display()
