@@ -26,14 +26,13 @@ fn main() -> Result<()> {
     let args = Args::parse();
     info!("Running on image: {}", args.image);
 
-    let analyzer = Analyzer::load(args.image, args.min_size)?;
+    let analyzer = Analyzer::load(args.image, args.min_size, args.no_compression)?;
     info!("Finding duplicates...");
     let duplicates = analyzer.find_duplicates()?;
     let _ = analyzer.print_possible_savings(&duplicates);
     let _ = analyzer.create_deduplicated_image(
         duplicates,
         Path::new(&args.output),
-        args.no_compression,
     )?;
     Ok(())
 }

@@ -73,6 +73,7 @@ pub struct Analyzer {
     pub tmp_dir: TempDir,
     pub layers: Vec<Layer>,
     pub min_size: u64,
+    no_compression: bool,
     original_manifest: Manifest,
     original_config: DockerConfig,
 }
@@ -87,9 +88,9 @@ fn is_gzipped(file_path: &Path) -> Result<bool> {
 }
 
 impl Analyzer {
-    pub fn load(image: String, min_size: u64) -> Result<Self> {
+    pub fn load(image: String, min_size: u64, no_compression: bool) -> Result<Self> {
         if image.ends_with(".tar") || image.ends_with(".tar.gz") || image.ends_with(".tar.xz") {
-            Ok(Analyzer::load_from_tar(image, min_size)?)
+            Ok(Analyzer::load_from_tar(image, min_size, no_compression)?)
         } else {
             Err(anyhow!(
                 "Unexpected image string {}, must be an exported tar file",
@@ -99,7 +100,7 @@ impl Analyzer {
         }
     }
 
-    pub fn load_from_tar(image: String, min_size: u64) -> Result<Self> {
+    pub fn load_from_tar(image: String, min_size: u64, no_compression: bool) -> Result<Self> {
         let tmp_dir = tempdir()?;
         let image = File::open(image)?;
         let tar_file = BufReader::new(image);
@@ -133,6 +134,7 @@ impl Analyzer {
             tmp_dir,
             layers,
             min_size,
+            no_compression,
             original_manifest: manifest,
             original_config: config,
         })
@@ -348,9 +350,8 @@ impl Analyzer {
         layer: &Layer,
         modifications: &Vec<DeDupTransaction>,
         output_dir: &Path,
-        no_compression: bool,
     ) -> Result<Layer> {
-        let new_layer_filename = if no_compression {
+        let new_layer_filename = if self.no_compression {
             format!("layer-{}.tar", layer.layer_index)
         } else {
             format!("layer-{}.tar.gz", layer.layer_index)
@@ -358,7 +359,7 @@ impl Analyzer {
         let new_layer_path = output_dir.join(&new_layer_filename);
         let tar_file = File::create(&new_layer_path)?;
 
-        let uncompressed_hash = if no_compression {
+        let uncompressed_hash = if self.no_compression {
             let (mut tar_file, hasher) = self.build_layer_tar(layer, modifications, tar_file)?;
             tar_file.flush()?;
             format!("sha256:{:x}", hasher.finalize())
@@ -383,15 +384,20 @@ impl Analyzer {
 
         let mut new_refs = Vec::new();
         for layer in new_layers {
-            let mut file = File::open(&layer.path)?;
-            let mut hasher = Sha256::new();
-            std::io::copy(&mut file, &mut hasher)?;
-            let digest = format!("{:x}", hasher.finalize());
-            let blob_path = blobs_dir.join(&digest);
-            fs::copy(&layer.path, &blob_path)?;
+            if self.no_compression {
+                let relative_path = format!("blobs/sha256/{}", layer.hash);
+                new_refs.push(relative_path);
+            } else {
+                let mut file = File::open(&layer.path)?;
+                let mut hasher = Sha256::new();
+                std::io::copy(&mut file, &mut hasher)?;
+                let digest = format!("{:x}", hasher.finalize());
+                let blob_path = blobs_dir.join(&digest);
+                fs::copy(&layer.path, &blob_path)?;
 
-            let relative_path = format!("blobs/sha256/{}", digest);
-            new_refs.push(relative_path);
+                let relative_path = format!("blobs/sha256/{}", digest);
+                new_refs.push(relative_path);
+            }
         }
         let mut new_manifest = self.original_manifest.clone();
         new_manifest.layers = new_refs;
@@ -424,7 +430,6 @@ impl Analyzer {
         &self,
         duplicates: Vec<DuplicateInfo>,
         output_path: &Path,
-        no_compression: bool,
     ) -> Result<()> {
         let work_dir = tempdir()?;
         let work_path = work_dir.path();
@@ -439,7 +444,7 @@ impl Analyzer {
             .layers
             .par_iter()
             .map(|layer| match plan.get(&layer.layer_index) {
-                Some(mods) => self.process_layer(layer, mods, &new_layer_dir, no_compression),
+                Some(mods) => self.process_layer(layer, mods, &new_layer_dir),
                 None => Ok(layer.clone()),
             })
             .collect();
