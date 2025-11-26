@@ -273,53 +273,12 @@ impl Analyzer {
             .into_group_map())
     }
 
-    fn extract_layer(&self, layer_tar: &Path, dest: &Path) -> Result<()> {
-        let file = File::open(layer_tar)?;
-        let reader: Box<dyn Read> = if is_gzipped(layer_tar)? {
-            Box::new(GzDecoder::new(file))
-        } else {
-            Box::new(file)
-        };
-        let mut archive = Archive::new(reader);
-        archive.unpack(dest)?;
-        Ok(())
-    }
-
     fn process_layer(
         &self,
         layer: &Layer,
         modifications: &Vec<DeDupTransaction>,
         output_dir: &Path,
     ) -> Result<Layer> {
-        let extract_dir = tempdir()?;
-        self.extract_layer(&layer.path, extract_dir.path())?;
-        for modif in modifications {
-            let file_path = extract_dir.path().join(&modif.target_path);
-            let _ = fs::remove_file(&file_path);
-            let source_path = PathBuf::from(&modif.original_path);
-            match modif.link_type {
-                LinkType::Sym => {
-                    std::os::unix::fs::symlink(&source_path, &file_path).context(format!(
-                        "Failed to create symlink {} -> {}",
-                        file_path.display(),
-                        source_path.display()
-                    ))?;
-                }
-                LinkType::Hard => {
-                    // TODO
-                    //fs::hard_link(&source_path, &file_path).context(format!(
-                    //    "Failed to create hardlink {} -> {}",
-                    //    file_path.display(),
-                    //    source_path.display()
-                    //))?;
-                    std::os::unix::fs::symlink(&source_path, &file_path).context(format!(
-                        "Failed to create symlink {} -> {}",
-                        file_path.display(),
-                        source_path.display()
-                    ))?;
-                }
-            }
-        }
         let new_layer_filename = format!("layer-{}.tar.gz", layer.layer_index);
         let new_layer_path = output_dir.join(&new_layer_filename);
         let tar_file = File::create(&new_layer_path)?;
@@ -331,9 +290,52 @@ impl Analyzer {
         let mut builder = Builder::new(tee);
 
         builder.follow_symlinks(false);
-        builder
-            .append_dir_all("", extract_dir.path())
-            .context("Failed to pack layer")?;
+
+        let mods_by_target: HashMap<PathBuf, &DeDupTransaction> = modifications
+            .iter()
+            .map(|m| (PathBuf::from(m.target_path.clone()), m))
+            .collect();
+
+        let mut archive = Archive::new(layer.open_reader()?);
+
+        for entry_result in archive.entries()? {
+            let mut entry = entry_result?;
+            let path = entry.path()?.into_owned();
+
+            if mods_by_target.contains_key(&path) {
+                info!("Replacing {} with a link", path.display());
+                continue;
+            }
+
+            let mut header = entry.header().clone();
+            builder.append_data(&mut header, &path, &mut entry)?;
+        }
+
+        for modif in modifications {
+            let mut header = tar::Header::new_gnu();
+            // The mode of a symlink is separate from the mode of the file it points to.
+            // 0o777 is a common choice for symlink modes.
+            header.set_mode(0o777);
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_mtime(0);
+            header.set_entry_type(tar::EntryType::Symlink);
+            let link_name = PathBuf::from(&modif.original_path);
+            match modif.link_type {
+                LinkType::Sym => {
+                    builder.append_link(&mut header, &modif.target_path, &link_name)
+                        .with_context(|| format!("Failed to add symlink {} -> {}", &modif.target_path, &modif.original_path))?;
+                }
+                LinkType::Hard => {
+                    // TODO: The original code used symlinks for hardlinks as well. Replicating that behavior.
+                    // A true hardlink in a tar archive has EntryType::Link and refers to a path
+                    // already in the archive. Given we might link across layers, symlinking is
+                    // a more robust general solution.
+                    builder.append_link(&mut header, &modif.target_path, &link_name)
+                        .with_context(|| format!("Failed to add hardlink as symlink {} -> {}", &modif.target_path, &modif.original_path))?;
+                }
+            }
+        }
 
         let tee = builder
             .into_inner()
