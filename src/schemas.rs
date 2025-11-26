@@ -1,8 +1,9 @@
-use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+
+use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
@@ -33,7 +34,7 @@ impl Manifest {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DockerConfig {
     pub architecture: String,
     pub config: ContainerConfig,
@@ -43,7 +44,7 @@ pub struct DockerConfig {
     pub rootfs: RootFs,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainerConfig {
     #[serde(rename = "Env")]
     pub env: Option<Vec<String>>,
@@ -73,7 +74,7 @@ pub struct ContainerConfig {
     pub volumes: Option<HashMap<String, serde_json::Value>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub created: String,
     pub created_by: String,
@@ -88,7 +89,7 @@ pub struct HistoryEntry {
     pub author: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RootFs {
     #[serde(rename = "type")]
     pub fs_type: String,

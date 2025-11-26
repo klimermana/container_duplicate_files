@@ -1,24 +1,26 @@
+use std::cmp::Reverse;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::{Path, PathBuf};
+use std::{fs, io};
+
 use anyhow::{Context, Result, anyhow};
+use env_logger::builder;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use humansize::{BINARY, format_size};
 use itertools::Itertools;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::ParallelIterator;
+use log::info;
+use rapidhash::v3::{RapidSecrets, rapidhash_v3_file_seeded};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use sha2::{Digest, Sha256};
-use std::cmp::Reverse;
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::copy;
-use std::path::{Path, PathBuf};
-use std::{fs, io::BufReader, io::Read};
 use tar::{Archive, Builder};
-use tempfile::TempDir;
-use tempfile::tempdir;
-use walkdir::WalkDir;
+use tempfile::{TempDir, tempdir};
 
 use crate::schemas::*;
+use crate::tee_writer::TeeWriter;
 
 #[derive(Debug, Clone)]
 pub struct FileInfo {
@@ -53,6 +55,18 @@ pub struct DeDupTransaction {
 pub struct Layer {
     pub path: PathBuf,
     pub layer_index: usize,
+    pub hash: String,
+}
+
+impl Layer {
+    pub fn open_reader(&self) -> Result<Box<dyn Read>> {
+        let file = File::open(&self.path)?;
+        if is_gzipped(&self.path)? {
+            Ok(Box::new(GzDecoder::new(file)))
+        } else {
+            Ok(Box::new(file))
+        }
+    }
 }
 
 pub struct Analyzer {
@@ -60,23 +74,25 @@ pub struct Analyzer {
     pub layers: Vec<Layer>,
     pub min_size: u64,
     original_manifest: Manifest,
+    original_config: DockerConfig,
 }
+
+const GZIP_MAGIC_BYTES: [u8; 2] = [0x1f, 0x8b];
 
 fn is_gzipped(file_path: &Path) -> Result<bool> {
     let mut file = File::open(file_path)?;
     let mut magic_bytes = [0u8; 2];
     file.read_exact(&mut magic_bytes)?;
-    Ok(magic_bytes[0] == 0x1f && magic_bytes[1] == 0x8b)
+    Ok(magic_bytes == GZIP_MAGIC_BYTES)
 }
 
 impl Analyzer {
     pub fn load(image: String, min_size: u64) -> Result<Self> {
-        //Ugly way to determine input arg, do this better
-        if image.contains(".tar") {
+        if image.ends_with(".tar") || image.ends_with(".tar.gz") || image.ends_with(".tar.xz") {
             Ok(Analyzer::load_from_tar(image, min_size)?)
         } else {
             Err(anyhow!(
-                "Unexpected image string {}, must be exported tar file",
+                "Unexpected image string {}, must be an exported tar file",
                 image
             )
             .into())
@@ -93,22 +109,32 @@ impl Analyzer {
 
         let manifest_file = extracted_dir.join("manifest.json");
         let manifest = Manifest::from_file(&manifest_file)?;
+
+        let config_path = extracted_dir.join(&manifest.config);
+        let config = DockerConfig::from_file(&config_path)?;
+
         let layers = manifest
             .layers
             .iter()
             .enumerate()
-            .map(|(idx, l)| Layer {
-                path: extracted_dir.join(l),
-                layer_index: idx,
+            .map(|(idx, l)| {
+                let layer_path = extracted_dir.join(l);
+                let hash = config.rootfs.diff_ids.get(idx).cloned().unwrap_or_default();
+                Layer {
+                    path: layer_path,
+                    layer_index: idx,
+                    hash,
+                }
             })
             .collect();
 
-        println!("{:#?}", manifest);
+        info!("{:#?}", manifest);
         Ok(Self {
             tmp_dir,
             layers,
             min_size,
             original_manifest: manifest,
+            original_config: config,
         })
     }
 
@@ -127,23 +153,10 @@ impl Analyzer {
     }
 
     fn scan_layer(&self, layer: &Layer) -> Result<Vec<FileInfo>> {
-        //println!(
-        //    "Scanning layer {}/{}...",
-        //    layer.layer_index + 1,
-        //    self.layers.len()
-        //);
-        if is_gzipped(&layer.path)? {
-            let file = File::open(layer.path.as_path())?;
-            let decoder = GzDecoder::new(file);
-            self.scan_tar_archive(decoder, layer.layer_index)
-        } else {
-            let file = File::open(layer.path.as_path())?;
-            self.scan_tar_archive(file, layer.layer_index)
-        }
-    }
-
-    fn scan_tar_archive<R: Read>(&self, reader: R, layer_index: usize) -> Result<Vec<FileInfo>> {
-        let mut archive = Archive::new(reader);
+        // Grouping by size first then only hashing the files with same size was slower
+        //  due to having to re-decompress the layers for a second pass
+        info!("Starting scan {}", layer.layer_index);
+        let mut archive = Archive::new(layer.open_reader()?);
         let mut files = Vec::new();
         for entry in archive.entries()? {
             let mut entry = entry?;
@@ -164,23 +177,26 @@ impl Analyzer {
                 // ignore removed files for now
                 continue;
             }
-
-            let mut hasher = Sha256::new();
-            copy(&mut entry, &mut hasher)?;
-            let hash = format!("{:x}", hasher.finalize());
-
+            //let mut hasher = blake3::Hasher::new();
+            //copy(&mut entry, &mut hasher)?;
+            //let hash = hasher.finalize().to_string();
+            // rapidhash ~ 11% faster
+            let hash = rapidhash_v3_file_seeded(&mut entry, &RapidSecrets::seed(0))?;
             files.push(FileInfo {
                 path,
                 size,
-                hash,
-                layer_index,
+                hash: hash.to_string(),
+                layer_index: layer.layer_index,
             });
         }
+
+        info!("Finished scan {}", layer.layer_index);
         Ok(files)
     }
 
     pub fn find_duplicates(&self) -> Result<Vec<DuplicateInfo>> {
         let files = self.scan_files()?;
+        info!("Done scanning files...");
         let mut files_by_hash: HashMap<String, Vec<FileInfo>> = HashMap::new();
         for file in files {
             files_by_hash
@@ -206,29 +222,29 @@ impl Analyzer {
     }
 
     pub fn print_possible_savings(&self, duplicates: &Vec<DuplicateInfo>) -> Result<()> {
-        println!("=============================");
-        println!("Total duplicate files: {}", duplicates.len());
-        println!(
+        info!("=============================");
+        info!("Total duplicate files: {}", duplicates.len());
+        info!(
             "Total duplicate size: {}",
             format_size(
                 duplicates.iter().map(|f| f.total_savings).sum::<u64>(),
                 BINARY
             )
         );
-        println!("=============================");
-        println!("Duplicate files:");
+        info!("=============================");
+        info!("Duplicate files:");
         for dup_info in duplicates.iter() {
-            println!(
+            info!(
                 "\tOriginal: {}, layer: {} size: {}",
                 dup_info.original.path,
                 dup_info.original.layer_index,
                 format_size(dup_info.original.size, BINARY)
             );
             for dup in dup_info.duplicates.iter() {
-                println!("\tDuplicate: {}, layer: {}", dup.path, dup.layer_index);
+                info!("\tDuplicate: {}, layer: {}", dup.path, dup.layer_index);
             }
         }
-        println!("=============================");
+        info!("=============================");
         Ok(())
     }
 
@@ -259,14 +275,13 @@ impl Analyzer {
 
     fn extract_layer(&self, layer_tar: &Path, dest: &Path) -> Result<()> {
         let file = File::open(layer_tar)?;
-        if is_gzipped(&layer_tar)? {
-            let decoder = GzDecoder::new(file);
-            let mut archive = Archive::new(decoder);
-            archive.unpack(dest)?;
+        let reader: Box<dyn Read> = if is_gzipped(layer_tar)? {
+            Box::new(GzDecoder::new(file))
         } else {
-            let mut archive = Archive::new(file);
-            archive.unpack(dest)?;
-        }
+            Box::new(file)
+        };
+        let mut archive = Archive::new(reader);
+        archive.unpack(dest)?;
         Ok(())
     }
 
@@ -309,19 +324,30 @@ impl Analyzer {
         let new_layer_path = output_dir.join(&new_layer_filename);
         let tar_file = File::create(&new_layer_path)?;
 
-        let encoder = GzEncoder::new(tar_file, Compression::default());
-        let mut builder = Builder::new(encoder);
+        let hasher = Sha256::new();
+        let gz_encoder = GzEncoder::new(tar_file, Compression::default());
+
+        let tee = TeeWriter::new(gz_encoder, hasher);
+        let mut builder = Builder::new(tee);
 
         builder.follow_symlinks(false);
         builder
             .append_dir_all("", extract_dir.path())
             .context("Failed to pack layer")?;
 
-        builder.finish().context("Failed to finalize tar")?;
+        let tee = builder
+            .into_inner()
+            .context("Failed to finalize tar file")?;
+
+        let (gz_encoder, hasher) = tee.into_inner();
+
+        let uncompressed_hash = format!("sha256:{:x}", hasher.finalize());
+        gz_encoder.finish().context("Failed to finish gzip")?;
 
         Ok(Layer {
             path: new_layer_path,
             layer_index: layer.layer_index,
+            hash: uncompressed_hash,
         })
     }
 
@@ -349,6 +375,25 @@ impl Analyzer {
         Ok(())
     }
 
+    fn update_config(&self, new_image_dir: &Path, new_layers: &Vec<Layer>) -> Result<()> {
+        let mut new_config = self.original_config.clone();
+        new_config.rootfs.diff_ids = new_layers.iter().map(|l| l.hash.clone()).collect();
+
+        let config_path = new_image_dir.join(&self.original_manifest.config);
+        let config_json = new_config.to_json()?;
+        if let Some(parent_dir) = config_path.parent() {
+            fs::create_dir_all(parent_dir)?;
+        } else {
+            return Err(anyhow!(
+                "Unable to get the parent directory for new config file"
+            ));
+        }
+        fs::write(config_path, config_json)?;
+        info!("Finish writing config");
+
+        Ok(())
+    }
+
     pub fn create_deduplicated_image(
         &self,
         duplicates: Vec<DuplicateInfo>,
@@ -359,10 +404,10 @@ impl Analyzer {
         let new_layer_dir = work_path.join("new_layers");
         let staging_dir = work_path.join("staging");
         fs::create_dir(&new_layer_dir)?;
-        println!("Creating modification plan...");
+        info!("Creating modification plan...");
         let plan = self.generate_modification_plan(duplicates)?;
 
-        println!("Processing layers...");
+        info!("Processing layers...");
         let new_layers: Result<Vec<_>> = self
             .layers
             .par_iter()
@@ -374,7 +419,8 @@ impl Analyzer {
 
         let new_layers = new_layers?;
 
-        println!("Updating manifest...");
+        info!("Updating configs...");
+        self.update_config(&staging_dir, &new_layers)?;
         self.update_manifest(&staging_dir, &new_layers)?;
 
         let config_src = self.tmp_dir.path().join(&self.original_manifest.config);
@@ -387,7 +433,7 @@ impl Analyzer {
             output_path.display()
         ))?;
 
-        println!("Packing new image...");
+        info!("Packing new image...");
         let mut builder = Builder::new(output_file);
 
         // Add all files from the new image directory
