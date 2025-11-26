@@ -423,11 +423,6 @@ impl Analyzer {
         self.update_config(&staging_dir, &new_layers)?;
         self.update_manifest(&staging_dir, &new_layers)?;
 
-        let config_src = self.tmp_dir.path().join(&self.original_manifest.config);
-        let config_dst = staging_dir.join(&self.original_manifest.config);
-
-        fs::copy(config_src, config_dst)?;
-
         let output_file = File::create(output_path).context(format!(
             "Failed to create output file: {}",
             output_path.display()
