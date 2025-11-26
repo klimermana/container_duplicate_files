@@ -30,6 +30,10 @@ fn main() -> Result<()> {
     info!("Finding duplicates...");
     let duplicates = analyzer.find_duplicates()?;
     let _ = analyzer.print_possible_savings(&duplicates);
-    let _ = analyzer.create_deduplicated_image(duplicates, Path::new(&args.output))?;
+    let _ = analyzer.create_deduplicated_image(
+        duplicates,
+        Path::new(&args.output),
+        args.no_compression,
+    )?;
     Ok(())
 }

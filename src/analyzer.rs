@@ -1,7 +1,7 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -273,20 +273,14 @@ impl Analyzer {
             .into_group_map())
     }
 
-    fn process_layer(
+    fn build_layer_tar<W: Write>(
         &self,
         layer: &Layer,
         modifications: &Vec<DeDupTransaction>,
-        output_dir: &Path,
-    ) -> Result<Layer> {
-        let new_layer_filename = format!("layer-{}.tar.gz", layer.layer_index);
-        let new_layer_path = output_dir.join(&new_layer_filename);
-        let tar_file = File::create(&new_layer_path)?;
-
+        writer: W,
+    ) -> Result<(W, Sha256)> {
         let hasher = Sha256::new();
-        let gz_encoder = GzEncoder::new(tar_file, Compression::default());
-
-        let tee = TeeWriter::new(gz_encoder, hasher);
+        let tee = TeeWriter::new(writer, hasher);
         let mut builder = Builder::new(tee);
 
         builder.follow_symlinks(false);
@@ -313,8 +307,6 @@ impl Analyzer {
 
         for modif in modifications {
             let mut header = tar::Header::new_gnu();
-            // The mode of a symlink is separate from the mode of the file it points to.
-            // 0o777 is a common choice for symlink modes.
             header.set_mode(0o777);
             header.set_uid(0);
             header.set_gid(0);
@@ -323,16 +315,24 @@ impl Analyzer {
             let link_name = PathBuf::from(&modif.original_path);
             match modif.link_type {
                 LinkType::Sym => {
-                    builder.append_link(&mut header, &modif.target_path, &link_name)
-                        .with_context(|| format!("Failed to add symlink {} -> {}", &modif.target_path, &modif.original_path))?;
+                    builder
+                        .append_link(&mut header, &modif.target_path, &link_name)
+                        .with_context(|| {
+                            format!(
+                                "Failed to add symlink {} -> {}",
+                                &modif.target_path, &modif.original_path
+                            )
+                        })?;
                 }
                 LinkType::Hard => {
-                    // TODO: The original code used symlinks for hardlinks as well. Replicating that behavior.
-                    // A true hardlink in a tar archive has EntryType::Link and refers to a path
-                    // already in the archive. Given we might link across layers, symlinking is
-                    // a more robust general solution.
-                    builder.append_link(&mut header, &modif.target_path, &link_name)
-                        .with_context(|| format!("Failed to add hardlink as symlink {} -> {}", &modif.target_path, &modif.original_path))?;
+                    builder
+                        .append_link(&mut header, &modif.target_path, &link_name)
+                        .with_context(|| {
+                            format!(
+                                "Failed to add hardlink as symlink {} -> {}",
+                                &modif.target_path, &modif.original_path
+                            )
+                        })?;
                 }
             }
         }
@@ -340,11 +340,35 @@ impl Analyzer {
         let tee = builder
             .into_inner()
             .context("Failed to finalize tar file")?;
+        Ok(tee.into_inner())
+    }
 
-        let (gz_encoder, hasher) = tee.into_inner();
+    fn process_layer(
+        &self,
+        layer: &Layer,
+        modifications: &Vec<DeDupTransaction>,
+        output_dir: &Path,
+        no_compression: bool,
+    ) -> Result<Layer> {
+        let new_layer_filename = if no_compression {
+            format!("layer-{}.tar", layer.layer_index)
+        } else {
+            format!("layer-{}.tar.gz", layer.layer_index)
+        };
+        let new_layer_path = output_dir.join(&new_layer_filename);
+        let tar_file = File::create(&new_layer_path)?;
 
-        let uncompressed_hash = format!("sha256:{:x}", hasher.finalize());
-        gz_encoder.finish().context("Failed to finish gzip")?;
+        let uncompressed_hash = if no_compression {
+            let (mut tar_file, hasher) = self.build_layer_tar(layer, modifications, tar_file)?;
+            tar_file.flush()?;
+            format!("sha256:{:x}", hasher.finalize())
+        } else {
+            let gz_encoder = GzEncoder::new(tar_file, Compression::default());
+            let (gz_encoder, hasher) = self.build_layer_tar(layer, modifications, gz_encoder)?;
+            let hash = format!("sha256:{:x}", hasher.finalize());
+            gz_encoder.finish().context("Failed to finish gzip")?;
+            hash
+        };
 
         Ok(Layer {
             path: new_layer_path,
@@ -400,6 +424,7 @@ impl Analyzer {
         &self,
         duplicates: Vec<DuplicateInfo>,
         output_path: &Path,
+        no_compression: bool,
     ) -> Result<()> {
         let work_dir = tempdir()?;
         let work_path = work_dir.path();
@@ -414,7 +439,7 @@ impl Analyzer {
             .layers
             .par_iter()
             .map(|layer| match plan.get(&layer.layer_index) {
-                Some(mods) => self.process_layer(layer, mods, &new_layer_dir),
+                Some(mods) => self.process_layer(layer, mods, &new_layer_dir, no_compression),
                 None => Ok(layer.clone()),
             })
             .collect();
