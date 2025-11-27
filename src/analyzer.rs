@@ -157,7 +157,6 @@ impl Analyzer {
     fn scan_layer(&self, layer: &Layer) -> Result<Vec<FileInfo>> {
         // Grouping by size first then only hashing the files with same size was slower
         //  due to having to re-decompress the layers for a second pass
-        info!("Starting scan {}", layer.layer_index);
         let mut archive = Archive::new(layer.open_reader()?);
         let mut files = Vec::new();
         for entry in archive.entries()? {
@@ -192,7 +191,6 @@ impl Analyzer {
             });
         }
 
-        info!("Finished scan {}", layer.layer_index);
         Ok(files)
     }
 
