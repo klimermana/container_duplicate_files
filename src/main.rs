@@ -11,6 +11,7 @@ use log::info;
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    args.validate()?;
 
     let mut builder = Builder::new();
 

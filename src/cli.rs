@@ -1,12 +1,8 @@
-use clap::{ArgGroup, Parser};
+use anyhow::{Result, anyhow};
+use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-#[command(group(
-    ArgGroup::new("output")
-        .required(true)
-        .args(["output", "stdout"]),
-))]
 pub struct Args {
     /// Docker image to examine. If not specified, stdin will be used
     #[arg(short, long)]
@@ -17,7 +13,7 @@ pub struct Args {
     pub output: Option<String>,
 
     /// Write to stdout. Cannot be used with -o.
-    #[arg(long)]
+    #[arg(long, action = clap::ArgAction::SetTrue)]
     pub stdout: bool,
 
     /// minimum size of an object to track
@@ -27,4 +23,13 @@ pub struct Args {
     /// Disable layer compression
     #[arg(long)]
     pub no_compression: bool,
+}
+
+impl Args {
+    pub fn validate(&self) -> Result<()> {
+        if self.output.is_none() && !self.stdout {
+            return Err(anyhow!("Either --output or --stdout must be specified"));
+        }
+        Ok(())
+    }
 }

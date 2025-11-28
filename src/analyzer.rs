@@ -1,9 +1,9 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::fs;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::fs;
 
 use anyhow::{Context, Result, anyhow};
 use flate2::Compression;
@@ -86,11 +86,7 @@ fn is_gzipped(file_path: &Path) -> Result<bool> {
 }
 
 impl Analyzer {
-    pub fn load_from_path(
-        image_path: String,
-        min_size: u64,
-        no_compression: bool,
-    ) -> Result<Self> {
+    pub fn load_from_path(image_path: String, min_size: u64, no_compression: bool) -> Result<Self> {
         if image_path.ends_with(".tar")
             || image_path.ends_with(".tar.gz")
             || image_path.ends_with(".tar.xz")
