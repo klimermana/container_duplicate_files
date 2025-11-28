@@ -427,10 +427,10 @@ impl Analyzer {
         Ok(())
     }
 
-    pub fn create_deduplicated_image(
+    pub fn create_deduplicated_image<W: Write>(
         &self,
         duplicates: Vec<DuplicateInfo>,
-        output_path: &Path,
+        writer: W,
     ) -> Result<()> {
         let work_dir = tempdir()?;
         let work_path = work_dir.path();
@@ -456,13 +456,8 @@ impl Analyzer {
         self.update_config(&staging_dir, &new_layers)?;
         self.update_manifest(&staging_dir, &new_layers)?;
 
-        let output_file = File::create(output_path).context(format!(
-            "Failed to create output file: {}",
-            output_path.display()
-        ))?;
-
         info!("Packing new image...");
-        let mut builder = Builder::new(output_file);
+        let mut builder = Builder::new(writer);
 
         // Add all files from the new image directory
         builder
