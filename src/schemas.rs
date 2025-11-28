@@ -16,14 +16,18 @@ pub struct Manifest {
 pub type ManifestFile = Vec<Manifest>;
 
 impl Manifest {
-    pub fn from_file(path: &Path) -> Result<Self> {
-        let contents = std::fs::read_to_string(path)?;
-        let manifests: ManifestFile = serde_json::from_str(&contents)?;
+    pub fn from_str(contents: &str) -> Result<Self> {
+        let manifests: ManifestFile = serde_json::from_str(contents)?;
         let manifest = manifests
             .into_iter()
             .next()
             .ok_or(anyhow!("No manifest.json found"))?;
         Ok(manifest)
+    }
+
+    pub fn from_file(path: &Path) -> Result<Self> {
+        let contents = std::fs::read_to_string(path)?;
+        Self::from_str(&contents)
     }
 
     pub fn write_to_file(&self, path: &Path) -> Result<()> {
@@ -99,10 +103,14 @@ pub struct RootFs {
 }
 
 impl DockerConfig {
+    pub fn from_str(contents: &str) -> Result<Self> {
+        let config: DockerConfig = serde_json::from_str(contents)?;
+        Ok(config)
+    }
+
     pub fn from_file(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)?;
-        let config: DockerConfig = serde_json::from_str(&contents)?;
-        Ok(config)
+        Self::from_str(&contents)
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -145,7 +153,7 @@ mod tests {
             }
         }"#;
 
-        let config = DockerConfig::from_str(json).unwrap();
+        let config: DockerConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.architecture, "arm64");
         assert_eq!(config.os, "linux");
         assert_eq!(config.rootfs.fs_type, "layers");

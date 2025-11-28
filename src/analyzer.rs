@@ -3,10 +3,9 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::{fs, io};
+use std::fs;
 
 use anyhow::{Context, Result, anyhow};
-use env_logger::builder;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -14,7 +13,7 @@ use humansize::{BINARY, format_size};
 use itertools::Itertools;
 use log::info;
 use rapidhash::v3::{RapidSecrets, rapidhash_v3_file_seeded};
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use sha2::{Digest, Sha256};
 use tar::{Archive, Builder};
 use tempfile::{TempDir, tempdir};
@@ -45,7 +44,6 @@ pub enum LinkType {
 
 #[derive(Debug)]
 pub struct DeDupTransaction {
-    layer: usize,
     original_path: String,
     target_path: String,
     link_type: LinkType,
@@ -88,23 +86,29 @@ fn is_gzipped(file_path: &Path) -> Result<bool> {
 }
 
 impl Analyzer {
-    pub fn load(image: String, min_size: u64, no_compression: bool) -> Result<Self> {
-        if image.ends_with(".tar") || image.ends_with(".tar.gz") || image.ends_with(".tar.xz") {
-            Ok(Analyzer::load_from_tar(image, min_size, no_compression)?)
+    pub fn load_from_path(
+        image_path: String,
+        min_size: u64,
+        no_compression: bool,
+    ) -> Result<Self> {
+        if image_path.ends_with(".tar")
+            || image_path.ends_with(".tar.gz")
+            || image_path.ends_with(".tar.xz")
+        {
+            let file = File::open(&image_path)
+                .with_context(|| format!("Failed to open image file: {}", image_path))?;
+            Analyzer::load(BufReader::new(file), min_size, no_compression)
         } else {
             Err(anyhow!(
                 "Unexpected image string {}, must be an exported tar file",
-                image
-            )
-            .into())
+                image_path
+            ))
         }
     }
 
-    pub fn load_from_tar(image: String, min_size: u64, no_compression: bool) -> Result<Self> {
+    pub fn load<R: Read>(image_stream: R, min_size: u64, no_compression: bool) -> Result<Self> {
         let tmp_dir = tempdir()?;
-        let image = File::open(image)?;
-        let tar_file = BufReader::new(image);
-        let mut archive = Archive::new(tar_file);
+        let mut archive = Archive::new(image_stream);
         let extracted_dir = tmp_dir.path();
         archive.unpack(extracted_dir)?;
 
@@ -259,7 +263,6 @@ impl Analyzer {
                 (
                     f.layer_index,
                     DeDupTransaction {
-                        layer: f.layer_index,
                         original_path: d.original.path.clone(),
                         target_path: f.path.clone(),
                         link_type: if d.original.layer_index == f.layer_index {
