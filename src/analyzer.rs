@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
@@ -56,6 +56,7 @@ pub struct Layer {
     pub layer_index: usize,
     pub hash: String,
 }
+const ONE_MB: usize = 1024 * 1024;
 
 impl Layer {
     pub fn open_reader(&self) -> Result<Box<dyn Read>> {
@@ -63,7 +64,7 @@ impl Layer {
         if is_gzipped(&self.path)? {
             Ok(Box::new(GzDecoder::new(file)))
         } else {
-            Ok(Box::new(BufReader::new(file)))
+            Ok(Box::new(BufReader::with_capacity(ONE_MB, file)))
         }
     }
 }
@@ -281,7 +282,8 @@ impl Analyzer {
     ) -> Result<(W, Sha256Writer)> {
         let hasher = Sha256Writer::new();
         let tee = TeeWriter::new(writer, hasher);
-        let mut builder = Builder::new(tee);
+        let buffered_tee = BufWriter::with_capacity(128 * 1024, tee);
+        let mut builder = Builder::new(buffered_tee);
 
         builder.follow_symlinks(false);
 
@@ -337,9 +339,10 @@ impl Analyzer {
             }
         }
 
-        let tee = builder
+        let buf_tee = builder.into_inner()?;
+        let tee = buf_tee
             .into_inner()
-            .context("Failed to finalize tar file")?;
+            .map_err(|e| anyhow::anyhow!("Failed to finalize tar file: {}", e))?;
         Ok(tee.into_inner())
     }
 
