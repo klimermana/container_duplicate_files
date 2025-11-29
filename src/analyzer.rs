@@ -62,7 +62,7 @@ impl Layer {
         if is_gzipped(&self.path)? {
             Ok(Box::new(GzDecoder::new(file)))
         } else {
-            Ok(Box::new(file))
+            Ok(Box::new(BufReader::new(file)))
         }
     }
 }
@@ -385,9 +385,10 @@ impl Analyzer {
                 let relative_path = format!("blobs/sha256/{}", layer.hash);
                 new_refs.push(relative_path);
             } else {
-                let mut file = File::open(&layer.path)?;
+                let file = File::open(&layer.path)?;
+                let mut reader = BufReader::new(file);
                 let mut hasher = Sha256::new();
-                std::io::copy(&mut file, &mut hasher)?;
+                std::io::copy(&mut reader, &mut hasher)?;
                 let digest = format!("{:x}", hasher.finalize());
                 let blob_path = blobs_dir.join(&digest);
                 fs::copy(&layer.path, &blob_path)?;
