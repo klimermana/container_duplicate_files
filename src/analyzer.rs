@@ -14,11 +14,12 @@ use itertools::Itertools;
 use log::info;
 use rapidhash::v3::{RapidSecrets, rapidhash_v3_file_seeded};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use sha2::{Digest, Sha256};
+//use sha2::{Digest, Sha256};
 use tar::{Archive, Builder};
 use tempfile::{TempDir, tempdir};
 
 use crate::schemas::*;
+use crate::sha_writer::Sha256Writer;
 use crate::tee_writer::TeeWriter;
 
 #[derive(Debug, Clone)]
@@ -277,8 +278,8 @@ impl Analyzer {
         layer: &Layer,
         modifications: &Vec<DeDupTransaction>,
         writer: W,
-    ) -> Result<(W, Sha256)> {
-        let hasher = Sha256::new();
+    ) -> Result<(W, Sha256Writer)> {
+        let hasher = Sha256Writer::new();
         let tee = TeeWriter::new(writer, hasher);
         let mut builder = Builder::new(tee);
 
@@ -359,11 +360,11 @@ impl Analyzer {
         let uncompressed_hash = if self.no_compression {
             let (mut tar_file, hasher) = self.build_layer_tar(layer, modifications, tar_file)?;
             tar_file.flush()?;
-            format!("sha256:{:x}", hasher.finalize())
+            format!("sha256:{}", hasher.finalize_hex())
         } else {
             let gz_encoder = GzEncoder::new(tar_file, Compression::default());
             let (gz_encoder, hasher) = self.build_layer_tar(layer, modifications, gz_encoder)?;
-            let hash = format!("sha256:{:x}", hasher.finalize());
+            let hash = format!("sha256:{}", hasher.finalize_hex());
             gz_encoder.finish().context("Failed to finish gzip")?;
             hash
         };
@@ -386,10 +387,10 @@ impl Analyzer {
                 new_refs.push(relative_path);
             } else {
                 let file = File::open(&layer.path)?;
-                let mut reader = BufReader::new(file);
-                let mut hasher = Sha256::new();
+                let mut reader = BufReader::with_capacity(ONE_MB, file);
+                let mut hasher = Sha256Writer::new();
                 std::io::copy(&mut reader, &mut hasher)?;
-                let digest = format!("{:x}", hasher.finalize());
+                let digest = format!("{}", hasher.finalize_hex());
                 let blob_path = blobs_dir.join(&digest);
                 fs::copy(&layer.path, &blob_path)?;
 
