@@ -14,7 +14,6 @@ use itertools::Itertools;
 use log::info;
 use rapidhash::v3::{RapidSecrets, rapidhash_v3_file_seeded};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-//use sha2::{Digest, Sha256};
 use tar::{Archive, Builder};
 use tempfile::{TempDir, tempdir};
 
