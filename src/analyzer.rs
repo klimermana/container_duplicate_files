@@ -55,7 +55,7 @@ pub struct Layer {
     pub layer_index: usize,
     pub hash: String,
 }
-const ONE_MB: usize = 1024 * 1024;
+const BUFFER_SIZE: usize = 4 * 1024 * 1024; // 4MB buffer for better I/O performance
 
 impl Layer {
     pub fn open_reader(&self) -> Result<Box<dyn Read>> {
@@ -63,7 +63,7 @@ impl Layer {
         if is_gzipped(&self.path)? {
             Ok(Box::new(GzDecoder::new(file)))
         } else {
-            Ok(Box::new(BufReader::with_capacity(ONE_MB, file)))
+            Ok(Box::new(BufReader::with_capacity(BUFFER_SIZE, file)))
         }
     }
 }
@@ -281,7 +281,7 @@ impl Analyzer {
     ) -> Result<(W, Sha256Writer)> {
         let hasher = Sha256Writer::new();
         let tee = TeeWriter::new(writer, hasher);
-        let buffered_tee = BufWriter::with_capacity(ONE_MB, tee);
+        let buffered_tee = BufWriter::with_capacity(BUFFER_SIZE, tee);
         let mut builder = Builder::new(buffered_tee);
 
         builder.follow_symlinks(false);
@@ -388,13 +388,15 @@ impl Analyzer {
                 let relative_path = format!("blobs/sha256/{}", layer.hash);
                 new_refs.push(relative_path);
             } else {
-                let file = File::open(&layer.path)?;
-                let mut reader = BufReader::with_capacity(ONE_MB, file);
-                let mut hasher = Sha256Writer::new();
-                std::io::copy(&mut reader, &mut hasher)?;
-                let digest = format!("{}", hasher.finalize_hex());
+                let digest = {
+                    let file = File::open(&layer.path)?;
+                    let mut reader = BufReader::with_capacity(BUFFER_SIZE, file);
+                    let mut hasher = Sha256Writer::new();
+                    std::io::copy(&mut reader, &mut hasher)?;
+                    hasher.finalize_hex()
+                };
                 let blob_path = blobs_dir.join(&digest);
-                fs::copy(&layer.path, &blob_path)?;
+                fs::rename(&layer.path, &blob_path)?;
 
                 let relative_path = format!("blobs/sha256/{}", digest);
                 new_refs.push(relative_path);
