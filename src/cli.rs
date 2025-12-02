@@ -23,12 +23,16 @@ pub struct Args {
     /// Disable layer compression
     #[arg(long)]
     pub no_compression: bool,
+
+    /// Print duplicates and exit without creating deduplicated image
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 impl Args {
     pub fn validate(&self) -> Result<()> {
-        if self.output.is_none() && !self.stdout {
-            return Err(anyhow!("Either --output or --stdout must be specified"));
+        if !self.dry_run && self.output.is_none() && !self.stdout {
+            return Err(anyhow!("Run must use --dry-run, --output or --stdout"));
         }
         Ok(())
     }

@@ -46,6 +46,11 @@ fn main() -> Result<()> {
     let duplicates = analyzer.find_duplicates()?;
     let _ = analyzer.print_possible_savings(&duplicates);
 
+    if args.dry_run {
+        info!("Dry run mode: exiting without creating deduplicated image");
+        return Ok(());
+    }
+
     if let Some(output_path_str) = args.output {
         info!("Writing deduplicated image to {}", output_path_str);
         let output_file = File::create(&output_path_str)
