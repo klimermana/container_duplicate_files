@@ -11,7 +11,7 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use humansize::{BINARY, format_size};
 use itertools::Itertools;
-use log::info;
+use log::{debug, info};
 use rapidhash::v3::{RapidSecrets, rapidhash_v3_file_seeded};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tar::{Archive, Builder};
@@ -281,7 +281,7 @@ impl Analyzer {
     ) -> Result<(W, Sha256Writer)> {
         let hasher = Sha256Writer::new();
         let tee = TeeWriter::new(writer, hasher);
-        let buffered_tee = BufWriter::with_capacity(128 * 1024, tee);
+        let buffered_tee = BufWriter::with_capacity(ONE_MB, tee);
         let mut builder = Builder::new(buffered_tee);
 
         builder.follow_symlinks(false);
@@ -298,7 +298,7 @@ impl Analyzer {
             let path = entry.path()?.into_owned();
 
             if mods_by_target.contains_key(&path) {
-                info!("Replacing {} with a link", path.display());
+                debug!("Replacing {} with a link", path.display());
                 continue;
             }
 
